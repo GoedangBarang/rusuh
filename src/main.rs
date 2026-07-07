@@ -9,7 +9,6 @@ use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use std::env;
 use tower_http::cors::{Any, CorsLayer};
 
-// Struktur Data untuk menerima Webhook dari Ekstensi Chrome
 #[derive(Deserialize)]
 struct WebhookPayload {
     action: String,
@@ -18,23 +17,22 @@ struct WebhookPayload {
     signal_type: Option<String>,
     entry: Option<f64>,
     tp: Option<f64>,
-    sl: Option<f64>, // TAMBAHAN: Menerima data SL
+    sl: Option<f64>, 
     reason: Option<String>,
 }
 
-// Struktur Data untuk mengirim sinyal ke Frontend HTML
 #[derive(Serialize, sqlx::FromRow)]
 struct SignalData {
     id: String,
     signal_type: String,
     entry_price: bigdecimal::BigDecimal,
     tp_price: bigdecimal::BigDecimal,
-    sl_price: bigdecimal::BigDecimal, // TAMBAHAN: Mengirim data SL
+    sl_price: bigdecimal::BigDecimal,
+    is_tp_hit: bool, // TAMBAHAN: Status apakah TP sudah tersentuh
 }
 
 #[tokio::main]
 async fn main() {
-    // Membaca URL Supabase dari Environment Variables
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL wajib diisi");
 
     let pool = PgPoolOptions::new()
@@ -43,7 +41,6 @@ async fn main() {
         .await
         .expect("Gagal terhubung ke Supabase");
 
-    // Mengizinkan semua origin agar Chrome Extension dan Vercel bisa mengakses API
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -63,21 +60,22 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-// Endpoint 1: Menerima JSON dari TradingView
 async fn handle_webhook(
     State(pool): State<Pool<Postgres>>,
     Json(payload): Json<WebhookPayload>,
 ) -> StatusCode {
     if payload.action == "new_signal" {
-        // PERBAIKAN: Menambahkan sl_price pada operasi INSERT
+        // PERISAI ANTI DUPLIKAT: ON CONFLICT (id) DO NOTHING
         let result = sqlx::query(
-            "INSERT INTO active_signals (id, signal_type, entry_price, tp_price, sl_price) VALUES ($1, $2, $3, $4, $5)"
+            "INSERT INTO active_signals (id, signal_type, entry_price, tp_price, sl_price, is_tp_hit) 
+             VALUES ($1, $2, $3, $4, $5, false) 
+             ON CONFLICT (id) DO NOTHING"
         )
-        .bind(payload.id)
+        .bind(&payload.id)
         .bind(payload.signal_type.unwrap_or_default())
         .bind(payload.entry.unwrap_or(0.0) as f64)
         .bind(payload.tp.unwrap_or(0.0) as f64)
-        .bind(payload.sl.unwrap_or(0.0) as f64) // Binding untuk SL
+        .bind(payload.sl.unwrap_or(0.0) as f64)
         .execute(&pool)
         .await;
 
@@ -85,10 +83,21 @@ async fn handle_webhook(
             Ok(_) => StatusCode::CREATED,
             Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
-    } else if payload.action == "close_signal" {
-        // Logika hapus tidak disentuh, tetap terpicu jika JSON action = close_signal
+    } else if payload.action == "tp_hit" {
+        // LOGIKA BARU: Jangan hapus, tapi update status is_tp_hit menjadi TRUE
+        let result = sqlx::query("UPDATE active_signals SET is_tp_hit = true WHERE id = $1")
+            .bind(&payload.id)
+            .execute(&pool)
+            .await;
+
+        match result {
+            Ok(_) => StatusCode::OK,
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    } else if payload.action == "delete_signal" {
+        // LOGIKA BARU: Untuk tombol hapus manual dari website
         let result = sqlx::query("DELETE FROM active_signals WHERE id = $1")
-            .bind(payload.id)
+            .bind(&payload.id)
             .execute(&pool)
             .await;
 
@@ -101,11 +110,9 @@ async fn handle_webhook(
     }
 }
 
-// Endpoint 2: Memberikan data ke Website Frontend
 async fn get_signals(State(pool): State<Pool<Postgres>>) -> Json<Vec<SignalData>> {
-    // PERBAIKAN: Memanggil sl_price pada SELECT query
     let signals = sqlx::query_as::<_, SignalData>(
-        "SELECT id, signal_type, entry_price, tp_price, sl_price FROM active_signals ORDER BY created_at DESC"
+        "SELECT id, signal_type, entry_price, tp_price, sl_price, is_tp_hit FROM active_signals ORDER BY created_at DESC"
     )
     .fetch_all(&pool)
     .await
