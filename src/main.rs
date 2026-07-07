@@ -18,6 +18,7 @@ struct WebhookPayload {
     signal_type: Option<String>,
     entry: Option<f64>,
     tp: Option<f64>,
+    sl: Option<f64>, // TAMBAHAN: Menerima data SL
     reason: Option<String>,
 }
 
@@ -28,6 +29,7 @@ struct SignalData {
     signal_type: String,
     entry_price: bigdecimal::BigDecimal,
     tp_price: bigdecimal::BigDecimal,
+    sl_price: bigdecimal::BigDecimal, // TAMBAHAN: Mengirim data SL
 }
 
 #[tokio::main]
@@ -67,14 +69,15 @@ async fn handle_webhook(
     Json(payload): Json<WebhookPayload>,
 ) -> StatusCode {
     if payload.action == "new_signal" {
-        // PERBAIKAN: Menggunakan sqlx::query tanpa tanda seru (!)
+        // PERBAIKAN: Menambahkan sl_price pada operasi INSERT
         let result = sqlx::query(
-            "INSERT INTO active_signals (id, signal_type, entry_price, tp_price) VALUES ($1, $2, $3, $4)"
+            "INSERT INTO active_signals (id, signal_type, entry_price, tp_price, sl_price) VALUES ($1, $2, $3, $4, $5)"
         )
         .bind(payload.id)
         .bind(payload.signal_type.unwrap_or_default())
         .bind(payload.entry.unwrap_or(0.0) as f64)
         .bind(payload.tp.unwrap_or(0.0) as f64)
+        .bind(payload.sl.unwrap_or(0.0) as f64) // Binding untuk SL
         .execute(&pool)
         .await;
 
@@ -83,7 +86,7 @@ async fn handle_webhook(
             Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     } else if payload.action == "close_signal" {
-        // PERBAIKAN: Menggunakan sqlx::query tanpa tanda seru (!)
+        // Logika hapus tidak disentuh, tetap terpicu jika JSON action = close_signal
         let result = sqlx::query("DELETE FROM active_signals WHERE id = $1")
             .bind(payload.id)
             .execute(&pool)
@@ -100,9 +103,9 @@ async fn handle_webhook(
 
 // Endpoint 2: Memberikan data ke Website Frontend
 async fn get_signals(State(pool): State<Pool<Postgres>>) -> Json<Vec<SignalData>> {
-    // PERBAIKAN: Menggunakan sqlx::query_as tanpa tanda seru (!)
+    // PERBAIKAN: Memanggil sl_price pada SELECT query
     let signals = sqlx::query_as::<_, SignalData>(
-        "SELECT id, signal_type, entry_price, tp_price FROM active_signals ORDER BY created_at DESC"
+        "SELECT id, signal_type, entry_price, tp_price, sl_price FROM active_signals ORDER BY created_at DESC"
     )
     .fetch_all(&pool)
     .await
