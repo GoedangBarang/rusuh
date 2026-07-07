@@ -67,13 +67,14 @@ async fn handle_webhook(
     Json(payload): Json<WebhookPayload>,
 ) -> StatusCode {
     if payload.action == "new_signal" {
-        let result = sqlx::query!(
-            "INSERT INTO active_signals (id, signal_type, entry_price, tp_price) VALUES ($1, $2, $3, $4)",
-            payload.id,
-            payload.signal_type.unwrap_or_default(),
-            payload.entry.unwrap_or(0.0) as f64,
-            payload.tp.unwrap_or(0.0) as f64
+        // PERBAIKAN: Menggunakan sqlx::query tanpa tanda seru (!)
+        let result = sqlx::query(
+            "INSERT INTO active_signals (id, signal_type, entry_price, tp_price) VALUES ($1, $2, $3, $4)"
         )
+        .bind(payload.id)
+        .bind(payload.signal_type.unwrap_or_default())
+        .bind(payload.entry.unwrap_or(0.0) as f64)
+        .bind(payload.tp.unwrap_or(0.0) as f64)
         .execute(&pool)
         .await;
 
@@ -82,7 +83,9 @@ async fn handle_webhook(
             Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     } else if payload.action == "close_signal" {
-        let result = sqlx::query!("DELETE FROM active_signals WHERE id = $1", payload.id)
+        // PERBAIKAN: Menggunakan sqlx::query tanpa tanda seru (!)
+        let result = sqlx::query("DELETE FROM active_signals WHERE id = $1")
+            .bind(payload.id)
             .execute(&pool)
             .await;
 
@@ -97,8 +100,8 @@ async fn handle_webhook(
 
 // Endpoint 2: Memberikan data ke Website Frontend
 async fn get_signals(State(pool): State<Pool<Postgres>>) -> Json<Vec<SignalData>> {
-    let signals = sqlx::query_as!(
-        SignalData,
+    // PERBAIKAN: Menggunakan sqlx::query_as tanpa tanda seru (!)
+    let signals = sqlx::query_as::<_, SignalData>(
         "SELECT id, signal_type, entry_price, tp_price FROM active_signals ORDER BY created_at DESC"
     )
     .fetch_all(&pool)
