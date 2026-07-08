@@ -13,3 +13,12 @@ tower-http = { version = "0.5", features = ["cors"] }
 dotenv = "0.15"
 # PERBAIKAN: Turunkan versi ke 0.3 agar kompatibel dengan sqlx 0.7
 bigdecimal = { version = "0.3", features = ["serde"] }
+# =========================================
+# 🛡️ MODE HEMAT RAM & CPU (UNTUK SERVER GRATIS)
+# =========================================
+[profile.release]
+opt-level = "z"     # Optimalkan ukuran file agar super kecil, bukan sekadar kecepatan
+lto = true          # Aktifkan Link Time Optimization (membuang kode yang tidak dipakai)
+codegen-units = 1   # Bikin kompilasi lebih lambat, tapi hasil akhirnya jauh lebih efisien
+panic = "abort"     # Jika ada error parah, langsung tutup aplikasi (hemat banyak RAM)
+strip = true        # Buang semua teks sampah debug dari dalam aplikasi
