@@ -1,12 +1,13 @@
 use axum::{
     extract::State,
     http::StatusCode,
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
-use std::env;
+use std::{env, time::Duration}; // TAMBAHAN: Modul Waktu
 use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Deserialize)]
@@ -17,7 +18,7 @@ struct WebhookPayload {
     signal_type: Option<String>,
     entry: Option<f64>,
     tp: Option<f64>,
-    sl: Option<f64>, // TAMBAHAN: Menerima SL
+    sl: Option<f64>,
     reason: Option<String>,
 }
 
@@ -27,16 +28,23 @@ struct SignalData {
     signal_type: String,
     entry_price: bigdecimal::BigDecimal,
     tp_price: bigdecimal::BigDecimal,
-    sl_price: bigdecimal::BigDecimal, // TAMBAHAN: Mengirim SL
-    is_tp_hit: bool, // TAMBAHAN: Status Take Profit
+    sl_price: bigdecimal::BigDecimal,
+    is_tp_hit: bool,
 }
 
-#[tokio::main]
+// 🛡️ OPTIMASI 1: Membatasi "Worker Threads"
+// Karena CPU Render gratisan sangat kecil, kita batasi agar Rust 
+// hanya memakai 1 inti pekerja saja. Ini mencegah CPU Throttling/Crash.
+#[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() {
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL wajib diisi");
 
+    // 🛡️ OPTIMASI 2: Diet Koneksi Database
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(3) // Kurangi maksimal koneksi (3 sudah lebih dari cukup untuk sinkronisasi)
+        .min_connections(0) // Saat tidak ada sinyal masuk, putuskan semua koneksi (RAM lega)
+        .acquire_timeout(Duration::from_secs(10)) // Jangan antre kelamaan, cegah macet
+        .idle_timeout(Duration::from_secs(30)) // Jika koneksi diam 30 detik, langsung bunuh
         .connect(&database_url)
         .await
         .expect("Gagal terhubung ke Supabase");
@@ -56,18 +64,18 @@ async fn main() {
     let addr = format!("0.0.0.0:{}", port);
     
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    println!("🚀 Backend berjalan di {}", addr);
+    println!("🚀 Backend Super Ringan berjalan di {}", addr);
     axum::serve(listener, app).await.unwrap();
 }
 
 async fn handle_webhook(
     State(pool): State<Pool<Postgres>>,
     Json(payload): Json<WebhookPayload>,
-) -> StatusCode {
+) -> impl IntoResponse {
     if payload.action == "new_signal" {
         let result = sqlx::query(
             "INSERT INTO active_signals (id, signal_type, entry_price, tp_price, sl_price, is_tp_hit) 
-             VALUES ($1, $2, $3, $4, $5, false) 
+             VALUES ($1, $2, $3::numeric, $4::numeric, $5::numeric, false) 
              ON CONFLICT (id) DO NOTHING"
         )
         .bind(&payload.id)
@@ -79,19 +87,18 @@ async fn handle_webhook(
         .await;
 
         match result {
-            Ok(_) => StatusCode::CREATED,
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Ok(_) => (StatusCode::CREATED, "OK".to_string()),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB Err: {}", e)),
         }
     } else if payload.action == "tp_hit" {
-        // PERINTAH BARU: Update status TP menjadi TRUE
         let result = sqlx::query("UPDATE active_signals SET is_tp_hit = true WHERE id = $1")
             .bind(&payload.id)
             .execute(&pool)
             .await;
 
         match result {
-            Ok(_) => StatusCode::OK,
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Ok(_) => (StatusCode::OK, "OK".to_string()),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB Err: {}", e)),
         }
     } else if payload.action == "delete_signal" {
         let result = sqlx::query("DELETE FROM active_signals WHERE id = $1")
@@ -100,19 +107,17 @@ async fn handle_webhook(
             .await;
 
         match result {
-            Ok(_) => StatusCode::OK,
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Ok(_) => (StatusCode::OK, "OK".to_string()),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB Err: {}", e)),
         }
     } else {
-        // Jika perintah tidak dikenali, kirim Error 400
-        StatusCode::BAD_REQUEST
+        (StatusCode::BAD_REQUEST, "Unknown".to_string())
     }
 }
 
 async fn get_signals(State(pool): State<Pool<Postgres>>) -> Json<Vec<SignalData>> {
     let signals = sqlx::query_as::<_, SignalData>(
-        // PERUBAHAN: ORDER BY id DESC agar terurut kronologis sesuai kalender
-        "SELECT id, signal_type, entry_price, tp_price, sl_price, is_tp_hit FROM active_signals ORDER BY id DESC"
+        "SELECT id, signal_type, entry_price, tp_price, sl_price, is_tp_hit FROM active_signals ORDER BY id DESC LIMIT 50" // 🛡️ OPTIMASI 3: Batasi maksimal data yang diambil agar RAM aman
     )
     .fetch_all(&pool)
     .await
