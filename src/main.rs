@@ -17,7 +17,7 @@ struct WebhookPayload {
     signal_type: Option<String>,
     entry: Option<f64>,
     tp: Option<f64>,
-    sl: Option<f64>, 
+    sl: Option<f64>, // TAMBAHAN: Menerima SL
     reason: Option<String>,
 }
 
@@ -27,8 +27,8 @@ struct SignalData {
     signal_type: String,
     entry_price: bigdecimal::BigDecimal,
     tp_price: bigdecimal::BigDecimal,
-    sl_price: bigdecimal::BigDecimal,
-    is_tp_hit: bool, // TAMBAHAN: Status apakah TP sudah tersentuh
+    sl_price: bigdecimal::BigDecimal, // TAMBAHAN: Mengirim SL
+    is_tp_hit: bool, // TAMBAHAN: Status Take Profit
 }
 
 #[tokio::main]
@@ -65,7 +65,6 @@ async fn handle_webhook(
     Json(payload): Json<WebhookPayload>,
 ) -> StatusCode {
     if payload.action == "new_signal" {
-        // PERISAI ANTI DUPLIKAT: ON CONFLICT (id) DO NOTHING
         let result = sqlx::query(
             "INSERT INTO active_signals (id, signal_type, entry_price, tp_price, sl_price, is_tp_hit) 
              VALUES ($1, $2, $3, $4, $5, false) 
@@ -84,7 +83,7 @@ async fn handle_webhook(
             Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     } else if payload.action == "tp_hit" {
-        // LOGIKA BARU: Jangan hapus, tapi update status is_tp_hit menjadi TRUE
+        // PERINTAH BARU: Update status TP menjadi TRUE
         let result = sqlx::query("UPDATE active_signals SET is_tp_hit = true WHERE id = $1")
             .bind(&payload.id)
             .execute(&pool)
@@ -95,7 +94,6 @@ async fn handle_webhook(
             Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     } else if payload.action == "delete_signal" {
-        // LOGIKA BARU: Untuk tombol hapus manual dari website
         let result = sqlx::query("DELETE FROM active_signals WHERE id = $1")
             .bind(&payload.id)
             .execute(&pool)
@@ -106,6 +104,7 @@ async fn handle_webhook(
             Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     } else {
+        // Jika perintah tidak dikenali, kirim Error 400
         StatusCode::BAD_REQUEST
     }
 }
