@@ -111,7 +111,8 @@ async fn handle_webhook(
 
 async fn get_signals(State(pool): State<Pool<Postgres>>) -> Json<Vec<SignalData>> {
     let signals = sqlx::query_as::<_, SignalData>(
-        "SELECT id, signal_type, entry_price, tp_price, sl_price, is_tp_hit FROM active_signals ORDER BY created_at DESC"
+        // PERUBAHAN: ORDER BY id DESC agar terurut kronologis sesuai kalender
+        "SELECT id, signal_type, entry_price, tp_price, sl_price, is_tp_hit FROM active_signals ORDER BY id DESC"
     )
     .fetch_all(&pool)
     .await
